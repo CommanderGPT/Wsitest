@@ -68,7 +68,7 @@ static void put(uint32_t *px, uint32_t w, uint32_t h, int x, int y, uint32_t c) 
 
 /* One row of 16 px cells, LSB on the left. White = 1, black = 0. */
 static void draw_bits(uint32_t *px, uint32_t w, uint32_t h, int y0, uint32_t value, int nbits) {
-    const int cell = 16, x0 = 16;
+    const int cell = 28, x0 = 24;
     for (int i = 0; i < nbits; i++) {
         uint32_t c = ((value >> i) & 1u) ? col(255, 255, 255) : col(0, 0, 0);
         for (int yy = 0; yy < cell; yy++)
@@ -118,10 +118,10 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
         }
 
     /* Status readout rows at the top of the frame. */
-    draw_bits(px, w, h, 8, f, 16);
-    draw_bits(px, w, h, 32, (uint32_t)acq & 0xFFFFu, 16);
-    draw_bits(px, w, h, 56, (uint32_t)pres & 0xFFFFu, 16);
-    draw_bits(px, w, h, 80, idx, 8);
+    draw_bits(px, w, h, 160, f, 16);
+    draw_bits(px, w, h, 200, (uint32_t)acq & 0xFFFFu, 16);
+    draw_bits(px, w, h, 240, (uint32_t)pres & 0xFFFFu, 16);
+    draw_bits(px, w, h, 280, idx, 8);
 }
 
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to,
