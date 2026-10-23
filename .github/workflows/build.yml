@@ -7,11 +7,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: android-actions/setup-android@v3
       - name: Install SDK components
         run: |
-          yes | sdkmanager --licenses > /dev/null
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          yes | sdkmanager --licenses
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          sdkmanager --list_installed | grep -E "platforms;android-35|build-tools;35|ndk;27"
       - name: Build native library
         run: |
           NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018
