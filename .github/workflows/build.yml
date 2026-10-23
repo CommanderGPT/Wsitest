@@ -9,9 +9,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install SDK components
         run: |
-          yes | sdkmanager --licenses
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
-          sdkmanager --list_installed | grep -E "platforms;android-35|build-tools;35|ndk;27"
+          SDKM=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager
+          ls -l "$SDKM"
+          yes | "$SDKM" --licenses > /dev/null
+          "$SDKM" --install "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          "$SDKM" --list_installed | grep -E "platforms;android-35|build-tools;35|ndk;27"
       - name: Build native library
         run: |
           NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018
