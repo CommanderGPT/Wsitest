@@ -1,4 +1,5 @@
 #include <android/log.h>
+#include <stdio.h>
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <dlfcn.h>
@@ -10,8 +11,9 @@
 #include <vulkan/vulkan.h>
 
 #define TAG "wsitest"
-#define LOG(...)  __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+#define LOG(...)  do { __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__); if (logf) { fprintf(logf, __VA_ARGS__); fputc(10, logf); fflush(logf); } } while (0)
+#define LOGE(...) do { __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__); if (logf) { fprintf(logf, __VA_ARGS__); fputc(10, logf); fflush(logf); } } while (0)
+static FILE *logf;
 #define FRAMES 300
 
 #define INSTANCE_FNS(X) \
@@ -83,6 +85,12 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 }
 
 void android_main(struct android_app *app) {
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/wsitest.log", app->activity->externalDataPath);
+        logf = fopen(path, "w");
+        if (logf) LOG("log file: %s", path);
+    }
     wait_window(app);
     if (app->destroyRequested) return;
     LOG("window ready");
