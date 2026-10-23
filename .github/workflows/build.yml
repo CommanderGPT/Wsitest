@@ -1,0 +1,41 @@
+name: build-wsitest
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v3
+      - name: Install SDK components
+        run: |
+          yes | sdkmanager --licenses > /dev/null
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+      - name: Build native library
+        run: |
+          NDK=$ANDROID_SDK_ROOT/ndk/27.2.12479018
+          CLANG=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang
+          GLUE=$NDK/sources/android/native_app_glue
+          mkdir -p build/lib/arm64-v8a
+          $CLANG --target=aarch64-linux-android35 -shared -fPIC -O2 -I$GLUE \
+            -o build/lib/arm64-v8a/libwsitest.so \
+            jni/jni_main.c $GLUE/android_native_app_glue.c -llog -landroid -ldl
+          cp lib/arm64-v8a/libvulkan_panfrost.so build/lib/arm64-v8a/
+      - name: Package and sign APK
+        run: |
+          BT=$ANDROID_SDK_ROOT/build-tools/35.0.0
+          JAR=$ANDROID_SDK_ROOT/platforms/android-35/android.jar
+          $BT/aapt2 link -I $JAR --manifest AndroidManifest.xml \
+            --min-sdk-version 35 --target-sdk-version 35 -o build/app-unsigned.apk
+          cd build && zip -r app-unsigned.apk lib && cd ..
+          keytool -genkeypair -keystore debug.keystore -storepass android -keypass android \
+            -alias wsitest -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=wsitest"
+          $BT/apksigner sign --ks debug.keystore --ks-pass pass:android \
+            --ks-key-alias wsitest --key-pass pass:android \
+            --out build/wsitest.apk build/app-unsigned.apk
+          unzip -l build/wsitest.apk | grep "\.so"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wsitest-apk
+          path: build/wsitest.apk
