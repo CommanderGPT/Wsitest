@@ -1,5 +1,4 @@
 #include <android/log.h>
-#include <stdio.h>
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <dlfcn.h>
@@ -11,10 +10,8 @@
 #include <vulkan/vulkan.h>
 
 #define TAG "wsitest"
-#define LOG(...)  do { __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__); if (logf) { fprintf(logf, __VA_ARGS__); fputc(10, logf); fflush(logf); } } while (0)
-#define LOGE(...) do { __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__); if (logf) { fprintf(logf, __VA_ARGS__); fputc(10, logf); fflush(logf); } } while (0)
-static FILE *logf;
-#define FRAMES 300
+#define LOG(...)  __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define INSTANCE_FNS(X) \
     X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceQueueFamilyProperties) \
@@ -37,14 +34,18 @@ INSTANCE_FNS(DECLARE)
 DEVICE_FNS(DECLARE)
 
 static PFN_vkGetInstanceProcAddr gipa;
+static int g_bgra;
+
+static void poll_events(struct android_app *app, int timeout_ms) {
+    int events = 0;
+    struct android_poll_source *src = NULL;
+    if (ALooper_pollOnce(timeout_ms, NULL, &events, (void **)&src) >= 0 && src)
+        src->process(app, src);
+}
 
 static void wait_window(struct android_app *app) {
-    while (!app->window && !app->destroyRequested) {
-        int events = 0;
-        struct android_poll_source *src = NULL;
-        if (ALooper_pollOnce(-1, NULL, &events, (void **)&src) >= 0 && src)
-            src->process(app, src);
-    }
+    while (!app->window && !app->destroyRequested)
+        poll_events(app, -1);
 }
 
 static uint32_t find_mem(const VkPhysicalDeviceMemoryProperties *mp, uint32_t bits) {
@@ -55,8 +56,35 @@ static uint32_t find_mem(const VkPhysicalDeviceMemoryProperties *mp, uint32_t bi
     return 0;
 }
 
-/* Checkerboard plus gradient, tinted per swapchain index so each image is distinguishable. */
-static void fill(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, int bgra) {
+static uint32_t col(uint32_t r, uint32_t g, uint32_t b) {
+    uint32_t c = g_bgra ? ((r << 16) | (g << 8) | b) : ((b << 16) | (g << 8) | r);
+    return 0xFF000000u | c;
+}
+
+static void put(uint32_t *px, uint32_t w, uint32_t h, int x, int y, uint32_t c) {
+    if (x < 0 || y < 0 || x >= (int)w || y >= (int)h) return;
+    px[(uint32_t)y * w + (uint32_t)x] = c;
+}
+
+/* One row of 16 px cells, LSB on the left. White = 1, black = 0. */
+static void draw_bits(uint32_t *px, uint32_t w, uint32_t h, int y0, uint32_t value, int nbits) {
+    const int cell = 16, x0 = 16;
+    for (int i = 0; i < nbits; i++) {
+        uint32_t c = ((value >> i) & 1u) ? col(255, 255, 255) : col(0, 0, 0);
+        for (int yy = 0; yy < cell; yy++)
+            for (int xx = 0; xx < cell; xx++)
+                put(px, w, h, x0 + i * cell + xx, y0 + yy, c);
+    }
+}
+
+static long long edge(long long ax, long long ay, long long bx, long long by,
+                      long long qx, long long qy) {
+    return (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
+}
+
+static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint32_t f,
+                       int32_t acq, int32_t pres) {
+    /* Background: checkerboard over a gradient, tinted per swapchain index. */
     for (uint32_t y = 0; y < h; y++)
         for (uint32_t x = 0; x < w; x++) {
             uint32_t r = x * 255u / w;
@@ -64,9 +92,36 @@ static void fill(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, int bgra) {
             uint32_t b = (idx * 60u) & 255u;
             if (((x >> 6) + (y >> 6)) & 1u)
                 r = 255u - r;
-            uint32_t c = bgra ? ((r << 16) | (g << 8) | b) : ((b << 16) | (g << 8) | r);
-            px[y * w + x] = 0xFF000000u | c;
+            px[y * w + x] = col(r, g, b);
         }
+
+    /* Moving triangle: slides left to right and back, period 240 frames. */
+    long long s = w / 5;
+    uint32_t p = f % 240u;
+    long long pos = p < 120u ? (long long)p : (long long)(240u - p);
+    long long xc = s + pos * ((long long)w - 2 * s) / 120;
+    long long cy = h / 2;
+    long long ax = xc, ay = cy - s;
+    long long bx = xc - s, by = cy + s;
+    long long cx = xc + s, cyy = cy + s;
+    uint32_t tc = col(255, (idx * 70u) & 255u, 255u - ((idx * 70u) & 255u));
+
+    long long minx = bx < 0 ? 0 : bx, maxx = cx >= (long long)w ? (long long)w - 1 : cx;
+    long long miny = ay < 0 ? 0 : ay, maxy = cyy >= (long long)h ? (long long)h - 1 : cyy;
+    for (long long y = miny; y <= maxy; y++)
+        for (long long x = minx; x <= maxx; x++) {
+            long long e0 = edge(ax, ay, bx, by, x, y);
+            long long e1 = edge(bx, by, cx, cyy, x, y);
+            long long e2 = edge(cx, cyy, ax, ay, x, y);
+            if ((e0 >= 0 && e1 >= 0 && e2 >= 0) || (e0 <= 0 && e1 <= 0 && e2 <= 0))
+                put(px, w, h, (int)x, (int)y, tc);
+        }
+
+    /* Status readout rows at the top of the frame. */
+    draw_bits(px, w, h, 8, f, 16);
+    draw_bits(px, w, h, 32, (uint32_t)acq & 0xFFFFu, 16);
+    draw_bits(px, w, h, 56, (uint32_t)pres & 0xFFFFu, 16);
+    draw_bits(px, w, h, 80, idx, 8);
 }
 
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to,
@@ -85,12 +140,6 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 }
 
 void android_main(struct android_app *app) {
-    {
-        char path[512];
-        snprintf(path, sizeof path, "%s/wsitest.log", app->activity->externalDataPath);
-        logf = fopen(path, "w");
-        if (logf) LOG("log file: %s", path);
-    }
     wait_window(app);
     if (app->destroyRequested) return;
     LOG("window ready");
@@ -152,10 +201,9 @@ void android_main(struct android_app *app) {
 
     VkSurfaceCapabilitiesKHR caps;
     p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps);
-    LOG("caps: minImages=%u maxImages=%u curExtent=%ux%u transform=0x%x usage=0x%x",
+    LOG("caps: minImages=%u maxImages=%u curExtent=%ux%u transform=0x%x",
         caps.minImageCount, caps.maxImageCount, caps.currentExtent.width,
-        caps.currentExtent.height, (unsigned)caps.currentTransform,
-        (unsigned)caps.supportedUsageFlags);
+        caps.currentExtent.height, (unsigned)caps.currentTransform);
 
     uint32_t nf = 0;
     p_vkGetPhysicalDeviceSurfaceFormatsKHR(pd, surf, &nf, NULL);
@@ -167,7 +215,7 @@ void android_main(struct android_app *app) {
         LOG("format[%u]=%d colorspace=%d", i, (int)fm[i].format, (int)fm[i].colorSpace);
         if (fm[i].format == VK_FORMAT_B8G8R8A8_UNORM) chosen = fm[i];
     }
-    int bgra = (chosen.format == VK_FORMAT_B8G8R8A8_UNORM);
+    g_bgra = (chosen.format == VK_FORMAT_B8G8R8A8_UNORM);
 
     uint32_t w = caps.currentExtent.width, h = caps.currentExtent.height;
     if (w == 0xFFFFFFFFu) {
@@ -225,12 +273,19 @@ void android_main(struct android_app *app) {
     p_vkMapMemory(dev, mem, 0, bsz, 0, &map);
     uint32_t *px = (uint32_t *)map;
 
-    for (int f = 0; f < FRAMES; f++) {
-        uint32_t idx = 0;
-        r = p_vkAcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx);
-        if (r < 0) { LOGE("frame %d acquire failed: %d", f, r); break; }
+    VkResult last_pres = VK_SUCCESS;
+    uint32_t f = 0;
+    while (!app->destroyRequested) {
+        poll_events(app, 0);
 
-        fill(px, w, h, idx, bgra);
+        uint32_t idx = 0;
+        VkResult ar = p_vkAcquireNextImageKHR(dev, sc, UINT64_MAX, acq, VK_NULL_HANDLE, &idx);
+        if (ar < 0 && ar != VK_SUBOPTIMAL_KHR) {
+            LOGE("frame %u acquire failed: %d", f, ar);
+            break;
+        }
+
+        draw_frame(px, w, h, idx, f, (int32_t)ar, (int32_t)last_pres);
 
         VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
@@ -261,15 +316,17 @@ void android_main(struct android_app *app) {
         VkResult qr = p_vkQueuePresentKHR(q, &pi);
         p_vkQueueWaitIdle(q);
 
-        LOG("frame %d idx=%u acquire=%d submit=%d present=%d perSwapchain=%d", f, idx, r, sr, qr, pres);
-        if (qr < 0) break;
+        last_pres = qr;
+        if (f % 60 == 0 || (qr < 0 && qr != VK_SUBOPTIMAL_KHR))
+            LOG("frame %u idx=%u acquire=%d submit=%d present=%d", f, idx, ar, sr, qr);
+        if (qr < 0 && qr != VK_SUBOPTIMAL_KHR) {
+            LOGE("frame %u present failed: %d", f, qr);
+            break;
+        }
+        f++;
     }
-    LOG("test finished");
+    LOG("loop ended at frame %u", f);
 
-    while (!app->destroyRequested) {
-        int events = 0;
-        struct android_poll_source *src = NULL;
-        if (ALooper_pollOnce(100, NULL, &events, (void **)&src) >= 0 && src)
-            src->process(app, src);
-    }
+    while (!app->destroyRequested)
+        poll_events(app, 100);
 }
