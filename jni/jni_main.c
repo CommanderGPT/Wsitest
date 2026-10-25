@@ -179,10 +179,12 @@ void android_main(struct android_app *app) {
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = qf, .queueCount = 1, .pQueuePriorities = &prio };
-    const char *dexts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    const char *dexts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                         VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+                         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
-        .enabledExtensionCount = 1, .ppEnabledExtensionNames = dexts };
+        .enabledExtensionCount = 3, .ppEnabledExtensionNames = dexts };
     VkDevice dev = VK_NULL_HANDLE;
     r = p_vkCreateDevice(pd, &dci, NULL, &dev);
     LOG("vkCreateDevice=%d queueFamily=%u", r, qf);
