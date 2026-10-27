@@ -362,8 +362,8 @@ void android_main(struct android_app *app) {
     }
     ANativeWindow_setBuffersGeometry(app->window, 1084, 715, WINDOW_FORMAT_RGBA_8888);
     probe(app->window);
-    surface_probe(app->window, 1084, 715);
-    present_loop(app->window);
+    /* disabled while checking the Vulkan path: surface_probe(app->window, 1084, 715); */
+    /* disabled while checking the Vulkan path: present_loop(app->window); */
 
     void *drv = dlopen("libvulkan_panfrost.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) { LOGE("dlopen: %s", dlerror()); return; }
