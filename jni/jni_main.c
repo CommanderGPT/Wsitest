@@ -134,6 +134,8 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 200, (uint32_t)acq & 0xFFFFu, 16);
     draw_bits(px, w, h, 240, (uint32_t)pres & 0xFFFFu, 16);
     draw_bits(px, w, h, 280, idx, 8);
+    draw_bits(px, w, h, 320, dev_rc, 16);
+    draw_bits(px, w, h, 360, swap_rc, 16);
     for (int pi = 0; pi < 8; pi++)
         draw_bits(px, w, h, (int)h - 460 + pi * 40, probe_vals[pi], 16);
 }
@@ -509,8 +511,6 @@ void android_main(struct android_app *app) {
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
     while (!app->destroyRequested) {
-        draw_bits(px, w, h, 320, dev_rc, 16);
-        draw_bits(px, w, h, 360, swap_rc, 16);
         poll_events(app, 0);
 
         uint32_t idx = 0;
