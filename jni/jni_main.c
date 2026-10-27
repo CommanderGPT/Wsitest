@@ -196,6 +196,9 @@ void ASurfaceTransaction_delete(ASurfaceTransaction *transaction);
 void ASurfaceTransaction_apply(ASurfaceTransaction *transaction);
 void ASurfaceTransaction_setBuffer(ASurfaceTransaction *transaction, ASurfaceControl *surface_control,
                                    AHardwareBuffer *buffer, int acquire_fence_fd);
+typedef void (*panvk_txn_complete_t)(void *ctx, void *stats);
+void ASurfaceTransaction_setOnComplete(ASurfaceTransaction *transaction, void *context,
+                                       panvk_txn_complete_t func);
 #include <android/hardware_buffer.h>
 #include <android/hardware_buffer_jni.h>
 static void surface_probe(ANativeWindow *win, uint32_t w, uint32_t h) {
@@ -230,6 +233,86 @@ static void surface_probe(ANativeWindow *win, uint32_t w, uint32_t h) {
     ASurfaceControl_release(ctl);
 }
 
+#include <time.h>
+#include <unistd.h>
+#include <stdint.h>
+static volatile int pl_busy[3];
+static volatile int pl_done;
+static void pl_on_complete(void *ctx, void *stats) {
+    (void)stats;
+    int slot = (int)(intptr_t)ctx;
+    __atomic_store_n(&pl_busy[slot], 0, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&pl_done, 1, __ATOMIC_SEQ_CST);
+}
+static uint64_t pl_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+static void present_loop(ANativeWindow *win) {
+    const int N = 600;
+    uint32_t w = (uint32_t)ANativeWindow_getWidth(win);
+    uint32_t h = (uint32_t)ANativeWindow_getHeight(win);
+    ASurfaceControl *ctl = ASurfaceControl_createFromWindow(win, "wsitest-present");
+    if (!ctl) { probe_vals[4] = 0xDEAD; return; }
+    AHardwareBuffer *ring[3] = {0, 0, 0};
+    AHardwareBuffer_Desc d = {
+        .width = w, .height = h, .layers = 1,
+        .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+        .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+                 AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                 AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+    };
+    for (int i = 0; i < 3; i++) {
+        if (AHardwareBuffer_allocate(&d, &ring[i]) != 0 || !ring[i]) {
+            probe_vals[4] = 0xE000 | i;
+            ASurfaceControl_release(ctl);
+            return;
+        }
+    }
+    uint64_t apply_ns = 0;
+    int frames = 0, timeouts = 0;
+    pl_done = 0;
+    for (int f = 0; f < N; f++) {
+        int slot = f % 3;
+        int waited = 0;
+        while (__atomic_load_n(&pl_busy[slot], __ATOMIC_SEQ_CST) && waited < 3000) {
+            usleep(1000);
+            waited++;
+        }
+        if (waited >= 3000) timeouts++;
+        AHardwareBuffer_Desc dd;
+        AHardwareBuffer_describe(ring[slot], &dd);
+        uint32_t stride = dd.stride ? dd.stride : w;
+        void *data = NULL;
+        if (AHardwareBuffer_lock(ring[slot], AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &data) == 0 && data) {
+            uint32_t *px = (uint32_t *)data;
+            uint32_t c0 = (f & 1) ? 0xFF00FFFFu : 0xFFFF00FFu;
+            uint32_t c1 = (f & 1) ? 0xFFFF00FFu : 0xFF00FFFFu;
+            for (uint32_t y = 0; y < h; y++)
+                for (uint32_t x = 0; x < w; x++)
+                    px[y * stride + x] = (((x >> 6) + (y >> 6)) & 1) ? c0 : c1;
+            AHardwareBuffer_unlock(ring[slot], NULL);
+        }
+        __atomic_store_n(&pl_busy[slot], 1, __ATOMIC_SEQ_CST);
+        ASurfaceTransaction *txn = ASurfaceTransaction_create();
+        ASurfaceTransaction_setOnComplete(txn, (void *)(intptr_t)slot, pl_on_complete);
+        ASurfaceTransaction_setBuffer(txn, ctl, ring[slot], -1);
+        uint64_t t0 = pl_now_ns();
+        ASurfaceTransaction_apply(txn);
+        apply_ns += pl_now_ns() - t0;
+        ASurfaceTransaction_delete(txn);
+        frames++;
+    }
+    for (int i = 0; i < 3000 && pl_done < frames; i++) usleep(1000);
+    probe_vals[4] = (uint32_t)((apply_ns / (uint64_t)(frames ? frames : 1)) / 1000u);
+    probe_vals[5] = (uint32_t)pl_done;
+    probe_vals[6] = (uint32_t)frames;
+    probe_vals[7] = (uint32_t)timeouts;
+    for (int i = 0; i < 3; i++) AHardwareBuffer_release(ring[i]);
+    ASurfaceControl_release(ctl);
+}
+
 void android_main(struct android_app *app) {
     wait_window(app);
     if (app->destroyRequested) return;
@@ -242,6 +325,7 @@ void android_main(struct android_app *app) {
     ANativeWindow_setBuffersGeometry(app->window, 1084, 715, WINDOW_FORMAT_RGBA_8888);
     probe(app->window);
     surface_probe(app->window, 1084, 715);
+    present_loop(app->window);
 
     void *drv = dlopen("libvulkan_panfrost.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) { LOGE("dlopen: %s", dlerror()); return; }
