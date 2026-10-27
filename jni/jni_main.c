@@ -249,6 +249,18 @@ static uint64_t pl_now_ns(void) {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
 }
+static void paint_row(uint32_t *px, uint32_t stride, uint32_t h, int y0, uint32_t value) {
+    const int x0 = 40, cell = 20, rowh = 24;
+    for (int y = y0; y < y0 + rowh && (uint32_t)y < h; y++)
+        for (int x = x0; x < x0 + 16 * cell; x++)
+            px[(uint32_t)y * stride + (uint32_t)x] = 0xFF000000u;
+    for (int i = 0; i < 16; i++) {
+        if (!((value >> i) & 1)) continue;
+        for (int y = y0 + 4; y < y0 + rowh - 4 && (uint32_t)y < h; y++)
+            for (int x = x0 + i * cell + 4; x < x0 + i * cell + cell - 4; x++)
+                px[(uint32_t)y * stride + (uint32_t)x] = 0xFFFFFFFFu;
+    }
+}
 static void present_loop(ANativeWindow *win) {
     const int N = 600;
     uint32_t w = (uint32_t)ANativeWindow_getWidth(win);
@@ -309,6 +321,31 @@ static void present_loop(ANativeWindow *win) {
     probe_vals[5] = (uint32_t)pl_done;
     probe_vals[6] = (uint32_t)frames;
     probe_vals[7] = (uint32_t)timeouts;
+    /* Hold the last frame with the readout painted on it, for a photo. */
+    {
+        int slot = (N - 1) % 3;
+        int waited = 0;
+        while (__atomic_load_n(&pl_busy[slot], __ATOMIC_SEQ_CST) && waited < 3000) {
+            usleep(1000);
+            waited++;
+        }
+        AHardwareBuffer_Desc dd;
+        AHardwareBuffer_describe(ring[slot], &dd);
+        uint32_t stride = dd.stride ? dd.stride : w;
+        void *data = NULL;
+        if (AHardwareBuffer_lock(ring[slot], AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &data) == 0 && data) {
+            uint32_t *px = (uint32_t *)data;
+            for (int pi = 0; pi < 4; pi++)
+                paint_row(px, stride, h, (int)h - 520 + pi * 40, probe_vals[4 + pi]);
+            AHardwareBuffer_unlock(ring[slot], NULL);
+        }
+        __atomic_store_n(&pl_busy[slot], 1, __ATOMIC_SEQ_CST);
+        ASurfaceTransaction *txn = ASurfaceTransaction_create();
+        ASurfaceTransaction_setBuffer(txn, ctl, ring[slot], -1);
+        ASurfaceTransaction_apply(txn);
+        ASurfaceTransaction_delete(txn);
+    }
+    for (int i = 0; i < 120; i++) usleep(1000000); /* hold 120 s for the photo */
     for (int i = 0; i < 3; i++) AHardwareBuffer_release(ring[i]);
     ASurfaceControl_release(ctl);
 }
