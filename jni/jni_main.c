@@ -401,10 +401,14 @@ void android_main(struct android_app *app) {
         .queueFamilyIndex = qf, .queueCount = 1, .pQueuePriorities = &prio };
     const char *dexts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                          VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
-                         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME };
+                         VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+                            "VK_KHR_external_memory",
+                            "VK_KHR_external_semaphore",
+                            "VK_KHR_dedicated_allocation",
+                            "VK_ANDROID_external_memory_android_hardware_buffer" };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
         .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci,
-        .enabledExtensionCount = 3, .ppEnabledExtensionNames = dexts };
+        .enabledExtensionCount = 7, .ppEnabledExtensionNames = dexts };
     VkDevice dev = VK_NULL_HANDLE;
     r = p_vkCreateDevice(pd, &dci, NULL, &dev);
     LOG("vkCreateDevice=%d queueFamily=%u", r, qf);
@@ -475,9 +479,12 @@ void android_main(struct android_app *app) {
     p_vkAllocateCommandBuffers(dev, &cbai, &cb);
 
     VkSemaphoreCreateInfo semci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+    VkExportSemaphoreCreateInfo esci = { .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+        .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT };
+    VkSemaphoreCreateInfo semci_exp = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &esci };
     VkSemaphore acq = VK_NULL_HANDLE, rend = VK_NULL_HANDLE;
     p_vkCreateSemaphore(dev, &semci, NULL, &acq);
-    p_vkCreateSemaphore(dev, &semci, NULL, &rend);
+    p_vkCreateSemaphore(dev, &semci_exp, NULL, &rend);
 
     VkDeviceSize bsz = (VkDeviceSize)w * h * 4;
     VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = bsz,
