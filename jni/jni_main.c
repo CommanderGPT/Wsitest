@@ -134,7 +134,7 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 240, (uint32_t)pres & 0xFFFFu, 16);
     draw_bits(px, w, h, 280, idx, 8);
     for (int pi = 0; pi < 8; pi++)
-        draw_bits(px, w, h, 320 + pi * 40, probe_vals[pi], 16);
+        draw_bits(px, w, h, (int)h - 460 + pi * 40, probe_vals[pi], 16);
 }
 
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to,
@@ -218,7 +218,7 @@ static void surface_probe(ANativeWindow *win, uint32_t w, uint32_t h) {
             uint32_t *px = (uint32_t *)data;
             for (uint32_t y = 0; y < h; y++)
                 for (uint32_t x = 0; x < w; x++)
-                    px[y * (desc.stride ? desc.stride : w) + x] = 0xFF00FFFFu;
+                    px[y * (desc.stride ? desc.stride : w) + x] = 0xFFFF00FFu;
             AHardwareBuffer_unlock(ahb, NULL);
         }
         ASurfaceTransaction *txn = ASurfaceTransaction_create();
