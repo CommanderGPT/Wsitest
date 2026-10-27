@@ -172,6 +172,16 @@ static void probe(ANativeWindow *win) {
     cancel_t cancel = h ? (cancel_t)dlsym(h, "ANativeWindow_cancelBuffer") : NULL;
     ANativeWindowBuffer *buf = NULL;
     int fence = -1;
+    /* Connect the window for buffer production: perform(win, CONNECT=13, EGL=1).
+     * The hook lives at offset 152 in the stub's ANativeWindow. */
+    int crc = -999;
+    {
+        typedef int (*perform_t)(ANativeWindow *, int, ...);
+        perform_t perform = *(perform_t *)((char *)win + 152);
+        if (perform)
+            crc = perform(win, 13, 1);
+    }
+    probe_vals[7] = (uint32_t)(crc & 0xFFFF);
     int rc = dq ? dq(win, &buf, &fence) : -999;
     probe_vals[0] = (uint32_t)(rc & 0xFFFF);
     probe_vals[1] = (uint32_t)ANativeWindow_getWidth(win);
