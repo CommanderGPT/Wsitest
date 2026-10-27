@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <stddef.h>
 static FILE *probe_out;
+static uint32_t probe_vals[8];
 static void PROBE_LOG(const char *fmt, ...) {
     if (!probe_out) return;
     va_list ap; va_start(ap, fmt); vfprintf(probe_out, fmt, ap); va_end(ap);
@@ -132,6 +133,8 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 200, (uint32_t)acq & 0xFFFFu, 16);
     draw_bits(px, w, h, 240, (uint32_t)pres & 0xFFFFu, 16);
     draw_bits(px, w, h, 280, idx, 8);
+    for (int pi = 0; pi < 8; pi++)
+        draw_bits(px, w, h, 320 + pi * 40, probe_vals[pi], 16);
 }
 
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to,
@@ -165,21 +168,21 @@ typedef int (*dq_t)(ANativeWindow *, ANativeWindowBuffer **, int *);
 typedef int (*cancel_t)(ANativeWindow *, ANativeWindowBuffer *, int);
 static void probe(ANativeWindow *win) {
     void *h = dlopen("libnativewindow.so", RTLD_NOW);
-    dq_t dq = (dq_t)dlsym(h, "ANativeWindow_dequeueBuffer");
-    cancel_t cancel = (cancel_t)dlsym(h, "ANativeWindow_cancelBuffer");
-    ANativeWindowBuffer *buf = NULL; int fence = -1;
-    int rc = dq(win, &buf, &fence);
-    PROBE_LOG("window %dx%d dequeue rc=%d buf=%p fence=%d\n",
-           ANativeWindow_getWidth(win), ANativeWindow_getHeight(win), rc, (void *)buf, fence);
-    if (rc == 0 && buf) {
-        PROBE_LOG("buf %dx%d stride=%d format=%d usage=0x%x handle=%p\n",
-               buf->width, buf->height, buf->stride, buf->format, buf->usage, buf->handle);
-        PROBE_LOG("offsetof width=%zu stride=%zu handle=%zu\n",
-               __builtin_offsetof(ANativeWindowBuffer, width),
-               __builtin_offsetof(ANativeWindowBuffer, stride),
-               __builtin_offsetof(ANativeWindowBuffer, handle));
-        if (cancel) cancel(win, buf, fence);
-    }
+    dq_t dq = h ? (dq_t)dlsym(h, "ANativeWindow_dequeueBuffer") : NULL;
+    cancel_t cancel = h ? (cancel_t)dlsym(h, "ANativeWindow_cancelBuffer") : NULL;
+    ANativeWindowBuffer *buf = NULL;
+    int fence = -1;
+    int rc = dq ? dq(win, &buf, &fence) : -999;
+    probe_vals[0] = (uint32_t)(rc & 0xFFFF);
+    probe_vals[1] = (uint32_t)ANativeWindow_getWidth(win);
+    probe_vals[2] = (uint32_t)ANativeWindow_getHeight(win);
+    probe_vals[3] = buf ? (uint32_t)buf->width : 0;
+    probe_vals[4] = buf ? (uint32_t)buf->height : 0;
+    probe_vals[5] = buf ? (uint32_t)buf->stride : 0;
+    probe_vals[6] = (uint32_t)__builtin_offsetof(ANativeWindowBuffer, handle);
+    probe_vals[7] = 1; /* probe ran */
+    if (rc == 0 && buf && cancel)
+        cancel(win, buf, fence);
 }
 
 void android_main(struct android_app *app) {
