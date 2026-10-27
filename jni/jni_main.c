@@ -185,7 +185,17 @@ static void probe(ANativeWindow *win) {
         cancel(win, buf, fence);
 }
 
-#include <android/surface_control.h>
+/* Declared directly: the NDK 27 header uses C++-only overloads that a C build can't parse.
+ * Signatures match android/surface_control.h (API 29+), linked from libandroid. */
+typedef struct ASurfaceControl ASurfaceControl;
+typedef struct ASurfaceTransaction ASurfaceTransaction;
+ASurfaceControl *ASurfaceControl_createFromWindow(ANativeWindow *parent, const char *debug_name);
+void ASurfaceControl_release(ASurfaceControl *surface_control);
+ASurfaceTransaction *ASurfaceTransaction_create(void);
+void ASurfaceTransaction_delete(ASurfaceTransaction *transaction);
+void ASurfaceTransaction_apply(ASurfaceTransaction *transaction);
+void ASurfaceTransaction_setBuffer(ASurfaceTransaction *transaction, ASurfaceControl *surface_control,
+                                   AHardwareBuffer *buffer, int acquire_fence_fd);
 #include <android/hardware_buffer.h>
 #include <android/hardware_buffer_jni.h>
 static void surface_probe(ANativeWindow *win, uint32_t w, uint32_t h) {
