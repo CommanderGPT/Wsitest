@@ -1,4 +1,14 @@
 #include <android/log.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdarg.h>
+#include <stddef.h>
+static FILE *probe_out;
+static void PROBE_LOG(const char *fmt, ...) {
+    if (!probe_out) return;
+    va_list ap; va_start(ap, fmt); vfprintf(probe_out, fmt, ap); va_end(ap);
+    fflush(probe_out);
+}
 #include <android/native_window.h>
 #include <android_native_app_glue.h>
 #include <dlfcn.h>
@@ -139,10 +149,50 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
     p_vkCmdPipelineBarrier(cb, src, dst, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
+struct android_native_base_t {
+    int magic; int version; void *reserved[4];
+    void (*incRef)(struct android_native_base_t *);
+    void (*decRef)(struct android_native_base_t *);
+};
+typedef struct ANativeWindowBuffer {
+    struct android_native_base_t common;
+    int width, height, stride, format, usage;
+    void *reserved[2];
+    const void *handle;
+    void *reserved_proc[8];
+} ANativeWindowBuffer;
+typedef int (*dq_t)(ANativeWindow *, ANativeWindowBuffer **, int *);
+typedef int (*cancel_t)(ANativeWindow *, ANativeWindowBuffer *, int);
+static void probe(ANativeWindow *win) {
+    void *h = dlopen("libnativewindow.so", RTLD_NOW);
+    dq_t dq = (dq_t)dlsym(h, "ANativeWindow_dequeueBuffer");
+    cancel_t cancel = (cancel_t)dlsym(h, "ANativeWindow_cancelBuffer");
+    ANativeWindowBuffer *buf = NULL; int fence = -1;
+    int rc = dq(win, &buf, &fence);
+    PROBE_LOG("window %dx%d dequeue rc=%d buf=%p fence=%d\n",
+           ANativeWindow_getWidth(win), ANativeWindow_getHeight(win), rc, (void *)buf, fence);
+    if (rc == 0 && buf) {
+        PROBE_LOG("buf %dx%d stride=%d format=%d usage=0x%x handle=%p\n",
+               buf->width, buf->height, buf->stride, buf->format, buf->usage, buf->handle);
+        PROBE_LOG("offsetof width=%zu stride=%zu handle=%zu\n",
+               __builtin_offsetof(ANativeWindowBuffer, width),
+               __builtin_offsetof(ANativeWindowBuffer, stride),
+               __builtin_offsetof(ANativeWindowBuffer, handle));
+        if (cancel) cancel(win, buf, fence);
+    }
+}
+
 void android_main(struct android_app *app) {
     wait_window(app);
     if (app->destroyRequested) return;
     LOG("window ready");
+    {
+        char path[512];
+        snprintf(path, sizeof path, "%s/window_probe.txt", app->activity->externalDataPath);
+        probe_out = fopen(path, "w");
+    }
+    ANativeWindow_setBuffersGeometry(app->window, 1084, 715, WINDOW_FORMAT_RGBA_8888);
+    probe(app->window);
 
     void *drv = dlopen("libvulkan_panfrost.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) { LOGE("dlopen: %s", dlerror()); return; }
