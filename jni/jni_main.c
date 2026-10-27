@@ -509,8 +509,8 @@ void android_main(struct android_app *app) {
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
     while (!app->destroyRequested) {
-        draw_bits(px, w, h, 60, dev_rc, 16);
-        draw_bits(px, w, h, 100, swap_rc, 16);
+        draw_bits(px, w, h, 320, dev_rc, 16);
+        draw_bits(px, w, h, 360, swap_rc, 16);
         poll_events(app, 0);
 
         uint32_t idx = 0;
