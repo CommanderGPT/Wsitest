@@ -172,16 +172,6 @@ static void probe(ANativeWindow *win) {
     cancel_t cancel = h ? (cancel_t)dlsym(h, "ANativeWindow_cancelBuffer") : NULL;
     ANativeWindowBuffer *buf = NULL;
     int fence = -1;
-    /* Connect the window for buffer production: perform(win, CONNECT=13, EGL=1).
-     * The hook lives at offset 152 in the stub's ANativeWindow. */
-    int crc = -999;
-    {
-        typedef int (*perform_t)(ANativeWindow *, int, ...);
-        perform_t perform = *(perform_t *)((char *)win + 152);
-        if (perform)
-            crc = perform(win, 13, 1);
-    }
-    probe_vals[7] = (uint32_t)(crc & 0xFFFF);
     int rc = dq ? dq(win, &buf, &fence) : -999;
     probe_vals[0] = (uint32_t)(rc & 0xFFFF);
     probe_vals[1] = (uint32_t)ANativeWindow_getWidth(win);
@@ -195,6 +185,41 @@ static void probe(ANativeWindow *win) {
         cancel(win, buf, fence);
 }
 
+#include <android/surface_control.h>
+#include <android/hardware_buffer.h>
+#include <android/hardware_buffer_jni.h>
+static void surface_probe(ANativeWindow *win, uint32_t w, uint32_t h) {
+    ASurfaceControl *ctl = ASurfaceControl_createFromWindow(win, "wsitest-probe");
+    probe_vals[7] = ctl ? 1 : 0;
+    if (!ctl) return;
+    AHardwareBuffer *ahb = NULL;
+    AHardwareBuffer_Desc desc = {
+        .width = w, .height = h, .layers = 1,
+        .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+        .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+                 AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                 AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN,
+    };
+    int arc = AHardwareBuffer_allocate(&desc, &ahb);
+    probe_vals[0] = (uint32_t)(arc & 0xFFFF);
+    if (arc == 0 && ahb) {
+        void *data = NULL;
+        if (AHardwareBuffer_lock(ahb, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &data) == 0 && data) {
+            uint32_t *px = (uint32_t *)data;
+            for (uint32_t y = 0; y < h; y++)
+                for (uint32_t x = 0; x < w; x++)
+                    px[y * (desc.stride ? desc.stride : w) + x] = 0xFF00FFFFu;
+            AHardwareBuffer_unlock(ahb, NULL);
+        }
+        ASurfaceTransaction *txn = ASurfaceTransaction_create();
+        ASurfaceTransaction_setBuffer(txn, ctl, ahb, -1);
+        ASurfaceTransaction_apply(txn);
+        ASurfaceTransaction_delete(txn);
+        probe_vals[6] = 96;
+    }
+    ASurfaceControl_release(ctl);
+}
+
 void android_main(struct android_app *app) {
     wait_window(app);
     if (app->destroyRequested) return;
@@ -206,6 +231,7 @@ void android_main(struct android_app *app) {
     }
     ANativeWindow_setBuffersGeometry(app->window, 1084, 715, WINDOW_FORMAT_RGBA_8888);
     probe(app->window);
+    surface_probe(app->window, 1084, 715);
 
     void *drv = dlopen("libvulkan_panfrost.so", RTLD_NOW | RTLD_LOCAL);
     if (!drv) { LOGE("dlopen: %s", dlerror()); return; }
