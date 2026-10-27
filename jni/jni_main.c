@@ -5,6 +5,7 @@
 #include <stddef.h>
 static FILE *probe_out;
 static uint32_t probe_vals[8];
+static uint32_t dev_rc = 0xFFFF, swap_rc = 0xFFFF;
 static void PROBE_LOG(const char *fmt, ...) {
     if (!probe_out) return;
     va_list ap; va_start(ap, fmt); vfprintf(probe_out, fmt, ap); va_end(ap);
@@ -345,7 +346,7 @@ static void present_loop(ANativeWindow *win) {
         ASurfaceTransaction_apply(txn);
         ASurfaceTransaction_delete(txn);
     }
-    for (int i = 0; i < 120; i++) usleep(1000000); /* hold 120 s for the photo */
+    for (int i = 0; i < 10; i++) usleep(1000000); /* hold 10 s */
     for (int i = 0; i < 3; i++) AHardwareBuffer_release(ring[i]);
     ASurfaceControl_release(ctl);
 }
@@ -412,6 +413,7 @@ void android_main(struct android_app *app) {
     VkDevice dev = VK_NULL_HANDLE;
     r = p_vkCreateDevice(pd, &dci, NULL, &dev);
     LOG("vkCreateDevice=%d queueFamily=%u", r, qf);
+    dev_rc = (uint32_t)(r & 0xFFFF);
     if (r != VK_SUCCESS) return;
     DEVICE_FNS(LOAD)
 
@@ -460,6 +462,7 @@ void android_main(struct android_app *app) {
     VkSwapchainKHR sc = VK_NULL_HANDLE;
     r = p_vkCreateSwapchainKHR(dev, &swi, NULL, &sc);
     LOG("vkCreateSwapchainKHR=%d %ux%u format=%d", r, w, h, (int)chosen.format);
+    swap_rc = (uint32_t)(r & 0xFFFF);
     if (r != VK_SUCCESS) return;
 
     uint32_t nimg = 0;
@@ -501,10 +504,13 @@ void android_main(struct android_app *app) {
     void *map = NULL;
     p_vkMapMemory(dev, mem, 0, bsz, 0, &map);
     uint32_t *px = (uint32_t *)map;
+    static uint32_t dummy_dev_rows[1];
 
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
     while (!app->destroyRequested) {
+        draw_bits(px, w, h, 60, dev_rc, 16);
+        draw_bits(px, w, h, 100, swap_rc, 16);
         poll_events(app, 0);
 
         uint32_t idx = 0;
