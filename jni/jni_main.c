@@ -534,10 +534,22 @@ void android_main(struct android_app *app) {
                 0, VK_ACCESS_TRANSFER_WRITE_BIT);
         VkBufferImageCopy reg = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .imageExtent = { w, h, 1 } };
-        VkClearColorValue clr = { .float32 = { (f & 1) ? 1.0f : 0.0f, 0.5f,
-                                              (f & 1) ? 0.0f : 1.0f, 1.0f } };
+        VkClearColorValue clr = { .float32 = { ((f / 120) & 1) ? 1.0f : 0.0f, 0.5f,
+                                              ((f / 120) & 1) ? 0.0f : 1.0f, 1.0f } };
         VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
         p_vkCmdClearColorImage(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &rng);
+        {
+            /* Copy the readout band from the staging buffer on top of the clear. */
+            VkBufferImageCopy band = { .bufferOffset = (VkDeviceSize)320 * w * 4,
+                .bufferRowLength = w, .bufferImageHeight = 0,
+                .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+                .imageOffset = { 0, 320, 0 },
+                .imageExtent = { w, 80, 1 } };
+            barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+            p_vkCmdCopyBufferToImage(cb, buf, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &band);
+        }
         barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0);
