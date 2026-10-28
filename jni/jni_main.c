@@ -358,9 +358,11 @@ static void present_loop(ANativeWindow *win) {
 
 #define ZC_N 3
 static volatile int zc_free[ZC_N];
+static volatile uint32_t zc_released, zc_skipped, zc_submitted;
 static void zc_on_release(void *ctx, void *stats) {
     (void)stats;
     __atomic_store_n(&zc_free[(intptr_t)ctx], 1, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&zc_released, 1, __ATOMIC_SEQ_CST);
 }
 static void zero_copy_loop(struct android_app *app, VkDevice dev, VkQueue q, VkCommandBuffer cb,
                            VkPhysicalDeviceMemoryProperties *mp, uint32_t w, uint32_t h) {
@@ -425,12 +427,13 @@ static void zero_copy_loop(struct android_app *app, VkDevice dev, VkQueue q, VkC
     for (uint32_t f = 0; f < 100000 && !app->destroyRequested; f++) {
         poll_events(app, 0);
         int slot = (int)(f % ZC_N);
-        int waited = 0;
-        while (!__atomic_load_n(&zc_free[slot], __ATOMIC_SEQ_CST) && waited < 3000) {
+        if (!__atomic_load_n(&zc_free[slot], __ATOMIC_SEQ_CST)) {
+            __atomic_add_fetch(&zc_skipped, 1, __ATOMIC_SEQ_CST);
             usleep(1000);
-            waited++;
+            continue;
         }
         __atomic_store_n(&zc_free[slot], 0, __ATOMIC_SEQ_CST);
+        __atomic_add_fetch(&zc_submitted, 1, __ATOMIC_SEQ_CST);
 
         p_vkResetCommandBuffer(cb, 0);
         VkCommandBufferBeginInfo bi = {
@@ -469,7 +472,9 @@ static void zero_copy_loop(struct android_app *app, VkDevice dev, VkQueue q, VkC
         ASurfaceTransaction_delete(txn);
 
         p_vkQueueWaitIdle(q);
-        if (f % 120 == 0) LOG("zc frame %u slot %d fence=%d", f, slot, fence_fd);
+        if (f % 120 == 0)
+            LOG("zc frame %u slot %d fence=%d submitted=%u released=%u skipped=%u", f, slot, fence_fd,
+                zc_submitted, zc_released, zc_skipped);
     }
 
     ASurfaceControl_release(ctl);
@@ -633,7 +638,7 @@ void android_main(struct android_app *app) {
     uint32_t *px = (uint32_t *)map;
     static uint32_t dummy_dev_rows[1];
 
-    const int ZC = 0;
+    const int ZC = 1;
     if (ZC) zero_copy_loop(app, dev, q, cb, &mp, w, h);
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
