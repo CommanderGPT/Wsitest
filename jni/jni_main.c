@@ -356,6 +356,128 @@ static void present_loop(ANativeWindow *win) {
     ASurfaceControl_release(ctl);
 }
 
+#define ZC_N 3
+static volatile int zc_free[ZC_N];
+static void zc_on_release(void *ctx, void *stats) {
+    (void)stats;
+    __atomic_store_n(&zc_free[(intptr_t)ctx], 1, __ATOMIC_SEQ_CST);
+}
+static void zero_copy_loop(struct android_app *app, VkDevice dev, VkQueue q, VkCommandBuffer cb,
+                           VkPhysicalDeviceMemoryProperties *mp, uint32_t w, uint32_t h) {
+    ASurfaceControl *ctl = ASurfaceControl_createFromWindow(app->window, "wsitest-zc");
+    if (!ctl) { LOGE("zc: surface control failed"); return; }
+    AHardwareBuffer *ahb[ZC_N] = {0};
+    VkImage img[ZC_N] = {0};
+    VkDeviceMemory mem[ZC_N] = {0};
+    VkSemaphore sem[ZC_N] = {0};
+    AHardwareBuffer_Desc d = {
+        .width = w, .height = h, .layers = 1,
+        .format = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
+        .usage = AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+    };
+    for (int i = 0; i < ZC_N; i++) {
+        zc_free[i] = 1;
+        if (AHardwareBuffer_allocate(&d, &ahb[i]) != 0 || !ahb[i]) { LOGE("zc: AHB alloc %d failed", i); return; }
+        VkAndroidHardwareBufferPropertiesANDROID props = {
+            .sType = VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID };
+        VkResult r = p_vkGetAndroidHardwareBufferPropertiesANDROID(dev, ahb[i], &props);
+        if (r != VK_SUCCESS) { LOGE("zc: AHB properties %d failed: %d", i, r); return; }
+        VkExternalMemoryImageCreateInfo emici = {
+            .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID };
+        VkImageCreateInfo ici = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .pNext = &emici,
+            .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+            .extent = { w, h, 1 }, .mipLevels = 1, .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+        r = p_vkCreateImage(dev, &ici, NULL, &img[i]);
+        if (r != VK_SUCCESS) { LOGE("zc: vkCreateImage %d failed: %d", i, r); return; }
+        VkImportAndroidHardwareBufferInfoANDROID imp = {
+            .sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID,
+            .buffer = ahb[i] };
+        VkMemoryDedicatedAllocateInfo dai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+            .pNext = &imp, .image = img[i] };
+        VkMemoryAllocateInfo mai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &dai,
+            .allocationSize = props.allocationSize,
+            .memoryTypeIndex = find_mem(mp, props.memoryTypeBits) };
+        r = p_vkAllocateMemory(dev, &mai, NULL, &mem[i]);
+        if (r != VK_SUCCESS) { LOGE("zc: import memory %d failed: %d", i, r); return; }
+        VkBindImageMemoryInfo bmi = {
+            .sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO,
+            .image = img[i], .memory = mem[i], .memoryOffset = 0 };
+        r = p_vkBindImageMemory2(dev, 1, &bmi);
+        if (r != VK_SUCCESS) { LOGE("zc: bind %d failed: %d", i, r); return; }
+        VkExportSemaphoreCreateInfo esci = {
+            .sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO,
+            .handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT };
+        VkSemaphoreCreateInfo sci = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &esci };
+        r = p_vkCreateSemaphore(dev, &sci, NULL, &sem[i]);
+        if (r != VK_SUCCESS) { LOGE("zc: semaphore %d failed: %d", i, r); return; }
+    }
+    LOG("zc: ring of %d AHB images ready (%ux%u)", ZC_N, w, h);
+
+    for (uint32_t f = 0; f < 100000 && !app->destroyRequested; f++) {
+        poll_events(app, 0);
+        int slot = (int)(f % ZC_N);
+        int waited = 0;
+        while (!__atomic_load_n(&zc_free[slot], __ATOMIC_SEQ_CST) && waited < 3000) {
+            usleep(1000);
+            waited++;
+        }
+        __atomic_store_n(&zc_free[slot], 0, __ATOMIC_SEQ_CST);
+
+        p_vkResetCommandBuffer(cb, 0);
+        VkCommandBufferBeginInfo bi = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+        p_vkBeginCommandBuffer(cb, &bi);
+        barrier(cb, img[slot], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                0, VK_ACCESS_TRANSFER_WRITE_BIT);
+        VkClearColorValue clr = { .float32 = { ((f / 120) & 1) ? 1.0f : 0.0f, 0.5f,
+                                               ((f / 120) & 1) ? 0.0f : 1.0f, 1.0f } };
+        VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        p_vkCmdClearColorImage(cb, img[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &rng);
+        barrier(cb, img[slot], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                VK_ACCESS_TRANSFER_WRITE_BIT, 0);
+        p_vkEndCommandBuffer(cb);
+
+        VkSubmitInfo si = {
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1, .pCommandBuffers = &cb,
+            .signalSemaphoreCount = 1, .pSignalSemaphores = &sem[slot] };
+        p_vkQueueSubmit(q, 1, &si, VK_NULL_HANDLE);
+
+        VkSemaphoreGetFdInfoKHR gi = {
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR,
+            .semaphore = sem[slot], .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT };
+        int fence_fd = -1;
+        VkResult fr = p_vkGetSemaphoreFdKHR(dev, &gi, &fence_fd);
+        if (fr != VK_SUCCESS) { LOGE("zc: sync fd export failed: %d", fr); fence_fd = -1; }
+
+        ASurfaceTransaction *txn = ASurfaceTransaction_create();
+        ASurfaceTransaction_setOnComplete(txn, (void *)(intptr_t)slot, zc_on_release);
+        ASurfaceTransaction_setBuffer(txn, ctl, ahb[slot], fence_fd);
+        ASurfaceTransaction_apply(txn);
+        ASurfaceTransaction_delete(txn);
+
+        p_vkQueueWaitIdle(q);
+        if (f % 120 == 0) LOG("zc frame %u slot %d fence=%d", f, slot, fence_fd);
+    }
+
+    ASurfaceControl_release(ctl);
+    for (int i = 0; i < ZC_N; i++) {
+        AHardwareBuffer_release(ahb[i]);
+    }
+}
+
 void android_main(struct android_app *app) {
     wait_window(app);
     if (app->destroyRequested) return;
@@ -511,9 +633,11 @@ void android_main(struct android_app *app) {
     uint32_t *px = (uint32_t *)map;
     static uint32_t dummy_dev_rows[1];
 
+    const int ZC = 1;
+    if (ZC) zero_copy_loop(app, dev, q, cb, &mp, w, h);
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
-    while (!app->destroyRequested) {
+    while (!ZC && !app->destroyRequested) {
         poll_events(app, 0);
 
         uint32_t idx = 0;
