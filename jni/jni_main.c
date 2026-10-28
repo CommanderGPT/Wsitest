@@ -38,7 +38,10 @@ static void PROBE_LOG(const char *fmt, ...) {
     X(vkResetCommandBuffer) X(vkCmdPipelineBarrier) X(vkCmdCopyBufferToImage) \
     X(vkQueueSubmit) X(vkQueueWaitIdle) X(vkCreateSemaphore) X(vkCreateBuffer) \
     X(vkGetBufferMemoryRequirements) X(vkAllocateMemory) X(vkBindBufferMemory) \
-    X(vkMapMemory)
+    X(vkMapMemory) \
+    X(vkCreateImage) X(vkBindImageMemory2) X(vkCmdClearColorImage) \
+    X(vkGetSemaphoreFdKHR) X(vkGetAndroidHardwareBufferPropertiesANDROID) \
+    X(vkCreateFence) X(vkWaitForFences)
 
 #define DECLARE(n) static PFN_##n p_##n;
 #define LOAD(n) p_##n = (PFN_##n)gipa(inst, #n);
@@ -531,7 +534,10 @@ void android_main(struct android_app *app) {
                 0, VK_ACCESS_TRANSFER_WRITE_BIT);
         VkBufferImageCopy reg = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
             .imageExtent = { w, h, 1 } };
-        p_vkCmdCopyBufferToImage(cb, buf, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &reg);
+        VkClearColorValue clr = { .float32 = { (f & 1) ? 1.0f : 0.0f, 0.5f,
+                                              (f & 1) ? 0.0f : 1.0f, 1.0f } };
+        VkImageSubresourceRange rng = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        p_vkCmdClearColorImage(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clr, 1, &rng);
         barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
                 VK_ACCESS_TRANSFER_WRITE_BIT, 0);
