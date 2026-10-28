@@ -633,7 +633,7 @@ void android_main(struct android_app *app) {
     uint32_t *px = (uint32_t *)map;
     static uint32_t dummy_dev_rows[1];
 
-    const int ZC = 1;
+    const int ZC = 0;
     if (ZC) zero_copy_loop(app, dev, q, cb, &mp, w, h);
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
