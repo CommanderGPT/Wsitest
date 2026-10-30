@@ -703,7 +703,7 @@ void android_main(struct android_app *app) {
                 .bufferRowLength = w, .bufferImageHeight = 0,
                 .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .imageOffset = { 0, 320, 0 },
-                .imageExtent = { w, 80, 1 } };
+                .imageExtent = { w, 200, 1 } };
             barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
