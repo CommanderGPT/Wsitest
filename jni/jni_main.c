@@ -97,6 +97,11 @@ static long long edge(long long ax, long long ay, long long bx, long long by,
     return (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
 }
 
+static volatile int probe_connect_rc = 9999, probe_deq_rc = 9999, probe_w = 0, probe_fence = -9;
+typedef int (*pfn_perform)(void *win, int op, ...);
+typedef int (*pfn_dequeue)(void *win, void **buf, int *fence);
+typedef int (*pfn_cancel)(void *win, void *buf, int fence);
+
 static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint32_t f,
                        int32_t acq, int32_t pres) {
     /* Background: checkerboard over a gradient, tinted per swapchain index. */
@@ -139,8 +144,31 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 280, idx, 8);
     draw_bits(px, w, h, 320, dev_rc, 16);
     draw_bits(px, w, h, 360, swap_rc, 16);
+    draw_bits(px, w, h, 400, (uint32_t)(probe_connect_rc & 0xFFFF), 16);
+    draw_bits(px, w, h, 440, (uint32_t)(probe_deq_rc & 0xFFFF), 16);
+    draw_bits(px, w, h, 480, (uint32_t)probe_w, 16);
     for (int pi = 0; pi < 8; pi++)
         draw_bits(px, w, h, (int)h - 460 + pi * 40, probe_vals[pi], 16);
+}
+
+static void window_dequeue_probe(ANativeWindow *win) {
+    void *lib = dlopen("libnativewindow.so", RTLD_NOW);
+    if (!lib) { probe_connect_rc = -1000; return; }
+    pfn_dequeue deq = (pfn_dequeue)dlsym(lib, "ANativeWindow_dequeueBuffer");
+    pfn_cancel can = (pfn_cancel)dlsym(lib, "ANativeWindow_cancelBuffer");
+    if (!deq || !can) { probe_connect_rc = -1001; return; }
+    /* perform hook at byte 152 in struct ANativeWindow (Mesa stub matches the device) */
+    pfn_perform perform = *(pfn_perform *)((char *)win + 152);
+    probe_connect_rc = perform(win, 13 /* CONNECT */, 2 /* CPU */);
+    if (probe_connect_rc != 0) return;
+    void *buf = NULL; int fence = -1;
+    probe_deq_rc = deq(win, &buf, &fence);
+    if (probe_deq_rc == 0 && buf) {
+        probe_w = *(int *)((char *)buf + 56);
+        probe_fence = fence;
+        can(win, buf, fence);
+    }
+    perform(win, 14 /* DISCONNECT */, 2);
 }
 
 static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImageLayout to,
@@ -484,6 +512,8 @@ static void zero_copy_loop(struct android_app *app, VkDevice dev, VkQueue q, VkC
 }
 
 void android_main(struct android_app *app) {
+    while (!app->window && !app->destroyRequested) { poll_events(app, 0); usleep(10000); }
+    window_dequeue_probe(app->window);
     wait_window(app);
     if (app->destroyRequested) return;
     LOG("window ready");
@@ -638,7 +668,7 @@ void android_main(struct android_app *app) {
     uint32_t *px = (uint32_t *)map;
     static uint32_t dummy_dev_rows[1];
 
-    const int ZC = 1;
+    const int ZC = 0;
     if (ZC) zero_copy_loop(app, dev, q, cb, &mp, w, h);
     VkResult last_pres = VK_SUCCESS;
     uint32_t f = 0;
