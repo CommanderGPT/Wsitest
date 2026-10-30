@@ -97,7 +97,7 @@ static long long edge(long long ax, long long ay, long long bx, long long by,
     return (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
 }
 
-static volatile int probe_rep = -1, probe_dist = -1;
+static volatile int probe_rep = -1, probe_dist = -1, probe_rc1[3] = {9999, 9999, 9999};
 static volatile int probe_connect_rc = 9999, probe_deq_rc = 9999, probe_w = 0, probe_fence = -9, probe_ww = 0, probe_stride = 0;
 typedef int (*pfn_perform)(void *win, int op, ...);
 typedef int (*pfn_dequeue)(void *win, void **buf, int *fence);
@@ -152,6 +152,9 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 560, (uint32_t)probe_stride, 16);
     draw_bits(px, w, h, 600, (uint32_t)probe_rep, 16);
     draw_bits(px, w, h, 640, (uint32_t)probe_dist, 16);
+    draw_bits(px, w, h, 680, (uint32_t)(probe_rc1[0] & 0xFFFF), 16);
+    draw_bits(px, w, h, 720, (uint32_t)(probe_rc1[1] & 0xFFFF), 16);
+    draw_bits(px, w, h, 760, (uint32_t)(probe_rc1[2] & 0xFFFF), 16);
     for (int pi = 0; pi < 8; pi++)
         draw_bits(px, w, h, (int)h - 460 + pi * 40, probe_vals[pi], 16);
 }
@@ -194,7 +197,8 @@ static void window_slot_probe(ANativeWindow *win) {
     int fence = -1;
     for (int i = 0; i < 3; i++) {
         void *b = NULL; fence = -1;
-        if (deq(win, &b, &fence) == 0) first[i] = b;
+        probe_rc1[i] = deq(win, &b, &fence);
+        if (probe_rc1[i] == 0) first[i] = b;
     }
     for (int i = 0; i < 3; i++)
         if (first[i]) can(win, first[i], -1);
@@ -756,7 +760,7 @@ void android_main(struct android_app *app) {
                 .bufferRowLength = w, .bufferImageHeight = 0,
                 .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .imageOffset = { 0, 320, 0 },
-                .imageExtent = { w, 340, 1 } };
+                .imageExtent = { w, 460, 1 } };
             barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
