@@ -97,7 +97,7 @@ static long long edge(long long ax, long long ay, long long bx, long long by,
     return (bx - ax) * (qy - ay) - (by - ay) * (qx - ax);
 }
 
-static volatile int probe_connect_rc = 9999, probe_deq_rc = 9999, probe_w = 0, probe_fence = -9;
+static volatile int probe_connect_rc = 9999, probe_deq_rc = 9999, probe_w = 0, probe_fence = -9, probe_ww = 0, probe_stride = 0;
 typedef int (*pfn_perform)(void *win, int op, ...);
 typedef int (*pfn_dequeue)(void *win, void **buf, int *fence);
 typedef int (*pfn_cancel)(void *win, void *buf, int fence);
@@ -147,6 +147,8 @@ static void draw_frame(uint32_t *px, uint32_t w, uint32_t h, uint32_t idx, uint3
     draw_bits(px, w, h, 400, (uint32_t)(probe_connect_rc & 0xFFFF), 16);
     draw_bits(px, w, h, 440, (uint32_t)(probe_deq_rc & 0xFFFF), 16);
     draw_bits(px, w, h, 480, (uint32_t)probe_w, 16);
+    draw_bits(px, w, h, 520, (uint32_t)probe_ww, 16);
+    draw_bits(px, w, h, 560, (uint32_t)probe_stride, 16);
     for (int pi = 0; pi < 8; pi++)
         draw_bits(px, w, h, (int)h - 460 + pi * 40, probe_vals[pi], 16);
 }
@@ -161,10 +163,12 @@ static void window_dequeue_probe(ANativeWindow *win) {
     pfn_perform perform = *(pfn_perform *)((char *)win + 152);
     probe_connect_rc = perform(win, 13 /* CONNECT */, 2 /* CPU */);
     if (probe_connect_rc != 0) return;
+    probe_ww = ANativeWindow_getWidth(win);
     void *buf = NULL; int fence = -1;
     probe_deq_rc = deq(win, &buf, &fence);
     if (probe_deq_rc == 0 && buf) {
         probe_w = *(int *)((char *)buf + 56);
+        probe_stride = *(int *)((char *)buf + 64);
         probe_fence = fence;
         can(win, buf, fence);
     }
@@ -703,7 +707,7 @@ void android_main(struct android_app *app) {
                 .bufferRowLength = w, .bufferImageHeight = 0,
                 .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                 .imageOffset = { 0, 320, 0 },
-                .imageExtent = { w, 200, 1 } };
+                .imageExtent = { w, 280, 1 } };
             barrier(cb, imgs[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
